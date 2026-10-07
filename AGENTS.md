@@ -1,6 +1,6 @@
 # Repository Agent Rules
 
-This repository uses the shared Dev Platform workflow with `workflow_profile=standard`, `harness_mode=platform`, `scm_provider=github`, `protected_main=False`, `publish_mode=direct` and `pr_merge_mode=auto`.
+This repository uses the shared Dev Platform workflow with `workflow_profile=standard`, `harness_mode=platform`, `scm_provider=github`, `protected_main=true`, `publish_mode=pr` and `pr_merge_mode=manual`.
 
 This file is the canonical repository-wide map of the cross-agent task protocol: sources of truth, task intents, always-on invariants, entrypoints and where the detailed contract lives. It is deliberately bounded. Detailed workflow rules live in the linked documents and are read when a task reaches that concern. Tool-specific instruction files reference this contract and must not fork or duplicate it.
 
@@ -23,11 +23,15 @@ Keep these intents distinct:
 
 - **Discuss** a change: inspect, design and compare options; do not create durable task state merely because the discussion is substantial.
 
-- **Fix a non-trivial change**: prepare the local OpenSpec proposal/spec/design/tasks package and stop for acceptance; no operator Backlog, Project mutation, or credentials are required.
+- **Fix/add to Backlog** when explicitly requested: create or reuse a Business Requirement through `python3 scripts/requirement_intake.py create ...` and stop. Fixation creates no OpenSpec change and performs no technical decomposition or implementation. Use this repository's committed `[development_backlog]` routing.
 
 - **Quick execution**: a small direct request, including a regression repair that restores behavior unambiguously established by an accepted contract, remains a quick task and uses the normal start/check/finish path with no external issue and no ceremonial OpenSpec. Retain proportionate regression evidence; if it becomes material, enter the configured non-trivial intake path before broadening scope.
 
-- **Fresh non-trivial execution**: explicit execution first accepts the local OpenSpec package and then implements it through the repository task/check/finish lifecycle.
+- **Fresh non-trivial execution**: create/reuse a Business Requirement, start its pre-authoring flow, drive evidence -> ADD -> intents -> handoff, author the resulting internal managed OpenSpec changes, link each child to the Requirement, start those managed tasks, and only then implement.
+- **Execute an existing Business Requirement**: start the supplied `type:requirement` Issue with `python3 scripts/requirement_intake.py start --requirement owner/repo#N`, then resume through `python3 scripts/execute_requirement.py advance --requirement owner/repo#N`.
+- **Direct technical managed/OpenSpec path**: an explicitly supplied managed task or explicit request for a technical managed task uses `managed_task.py create`, `execute_managed_task.py`, or `start_managed_task.py`.
+
+Internal children carry `type:internal-change` and link to their parent Requirement. Read derived progress with `requirement_intake.py aggregate`; do not maintain a competing task ledger. After import, the child's OpenSpec package is canonical for implementation and verification.
 
 
 
@@ -58,6 +62,13 @@ Goal refinement is a selective layer before authoring, used only for explicit go
 ```bash
 python3 scripts/agent_doctor.py
 python3 scripts/start_task.py <slug> --task "<task>" --scope "<files/modules>"
+python3 scripts/requirement_intake.py routing-parameters
+python3 scripts/requirement_intake.py start --requirement owner/repo#N
+python3 scripts/execute_requirement.py advance --requirement owner/repo#N
+python3 scripts/orchestrate_pre_authoring.py --id requirement-N status
+python3 scripts/managed_task.py create --bundle <directory>
+python3 scripts/start_managed_task.py owner/repo#N
+python3 scripts/execute_managed_task.py --bundle <directory>
 
 python3 scripts/select_checks.py --execute
 python3 scripts/openspec_lifecycle.py archive <change>
@@ -68,7 +79,7 @@ python3 scripts/finish_task.py --status
 
 `agent_doctor.py` is start-of-task hygiene and publication preflight. `start_task.py` synchronizes `origin` safely and never auto-merges divergent histories. `finish_task.py --reconcile` is the explicit managed-task recovery operation: it reports/merges current authoritative main only through normal Git history, refuses dirty/provenance-ambiguous/changed-remote state, and requires validation to be rerun. `finish_task.py` enforces OpenSpec lifecycle hygiene, re-fetches immediately before publication, refuses stale/diverged integration, never force-pushes, and is resumable: rerunning it after any interruption is the correct next step. `--status` never publishes, merges, or mutates task content; it freshly observes task/main ancestry so it can point to `--reconcile` before expensive validation.
 
-`publish_mode=direct`: valid only when `protected_main=false`. The platform re-fetches immediately before push and only pushes when `origin/main` is an ancestor of local `main`. Any divergence aborts publication.
+`publish_mode=pr`: validated work is published as an exact-head PR; required GitHub checks gate merge. `pr_merge_mode=manual` leaves the PR for explicit review and merge.
 
 ## Where the detailed contract lives
 

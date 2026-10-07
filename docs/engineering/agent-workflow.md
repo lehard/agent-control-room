@@ -66,17 +66,165 @@ with a best-effort `chmod` or `rm -rf`.
 ## Task intake
 
 
-This project has not explicitly enabled an operator integration, so task intake is self-contained: it does not require an external Backlog, Project-status mutation, fleet registry, process-health labels, or operator credentials.
+The canonical cross-project contract is [task-intake.md](task-intake.md).
+Generic fixation is requirement-first.
 
-For a small direct request, use the existing task/check/finish lifecycle. If the work becomes materially behavioral, architectural, compatibility-sensitive, or needs a complete contract, create and agree a local OpenSpec change before implementation. The materialized change is canonical until verification and archive; do not let code diverge from it.
+For an explicitly accepted non-trivial change that the user asks to record,
+author a Business Requirement and stop:
 
-```bash
-openspec new change <change>
-python3 scripts/select_checks.py --execute
-python3 scripts/openspec_lifecycle.py check
-```
+~~~
+python3 scripts/requirement_intake.py create \
+  --repository OWNER/DEVELOPMENT-BACKLOG \
+  --title "<business requirement title>" \
+  --outcome-file <outcome.md> \
+  --target-repository OWNER/TARGET \
+  [--context-file <context.md>] \
+  [--acceptance-file <acceptance.md>] \
+  [--exclusions-file <exclusions.md>]
+~~~
 
-The canonical cross-project intent contract is [task-intake.md](task-intake.md).
+This creates/reuses only the human-facing `type:requirement` Issue. It does
+not author OpenSpec or technical decomposition and does not start execution.
+
+When the user asks to execute that Requirement, run:
+
+~~~
+python3 scripts/requirement_intake.py start --requirement owner/repo#N
+python3 scripts/orchestrate_pre_authoring.py --id requirement-N status
+~~~
+
+Resume evidence -> ADD -> intents -> handoff, asking the human only for a
+consequential unresolved choice. Each ready handoff becomes an internal
+technical managed change through the existing managed-task authoring path; link
+the resulting Issue back immediately:
+
+~~~
+python3 scripts/managed_task.py create --bundle <directory>
+python3 scripts/requirement_intake.py link-child --requirement owner/repo#N --child owner/repo#M
+python3 scripts/start_managed_task.py owner/repo#M
+~~~
+
+The child carries `type:internal-change`; the parent Requirement stays the
+human-facing object.
+A direct deterministic or bounded-evidence handoff is one executable child.
+One child finishes through its normal managed PR and exact merge; two or more
+children use shared integration only when joint delivery is required. After
+every mandatory child is delivered, terminal reconciliation marks the parent
+Project card `Done` and closes its Issue. The operation is idempotent for older
+delivered Requirements:
+`python3 scripts/requirement_terminal.py reconcile --requirement owner/repo#N`.
+No `Requirement-Integration-Exception` is required for an ordinary single child.
+
+Before terminal publication, run `python3 scripts/requirement_retrospective.py review-path --requirement owner/repo#N`, then review the full Requirement path from accepted
+intent through pre-authoring, decomposition, children and delivery. Include successful overrides, manual workarounds and state changes, recurrences of open process issues, and material drift observed in state owned by another operator or lifecycle. Record each meaningful new occurrence with the existing friction command using `--task owner/repo#N` and a matching `--trigger`; a clean child review does not erase parent evidence. Record new
+meaningful findings with `scripts/agent_friction.py record --task
+owner/repo#N`, then use `scripts/requirement_retrospective.py checkpoint
+--requirement owner/repo#N --result findings --event <id>`. A clean review
+uses `--result none --review-note "Reviewed actual Requirement path"`. Findings also require a short `--review-note`. The receipt is machine-local and bound to the current
+parent and child set; it is a terminal gate, not a second status ledger.
+Each technical child keeps its own post-task retrospective. A new stage
+records meaningful process friction itself or exposes it to its enclosing
+retrospective.
+
+Use
+`python3 scripts/requirement_intake.py aggregate --requirement owner/repo#N`
+for a read-through Requirement progress projection. The compatible `status`
+field remains child-only; `progress` adds a recomputable pre-authoring,
+design/decision, readiness, implementation, blocked/unknown, or done stage
+with source diagnostics. Do not create a second Requirement status ledger.
+
+To judge a harness change by its end-to-end effect, use the read-only
+`python3 scripts/requirement_metrics.py report --requirement owner/repo#N`
+(`--format text`, `--offline`), or compare several Requirements with
+`python3 scripts/requirement_metrics.py aggregate` over repeated
+`--requirement` values or `--closed-since YYYY-MM-DD`. It composes existing
+sources only (Requirement and child Issues, pre-authoring evidence, managed
+provenance, routing/execution records, archived verification, automated-check
+and independent review evidence, published PR history, publication labels, CI
+runs, the friction log and counters-only Claude Code session transcripts).
+Every value is `{value, status, sources}` with status `measured`, `derived`,
+`partial` or `unknown`; missing evidence stays unknown and history rebuilt
+from published commits is a partial lower bound, never zero or an estimate.
+Runtime-specific usage stays keyed by runtime, and the output never contains
+prompts, transcript text, tool payloads, finding text or friction prose. The
+report writes nothing, produces no score and changes no policy; acting on it
+requires its own managed change.
+
+Quick tasks remain unchanged. A small regression repair may remain quick when
+an accepted spec or equivalent durable contract unambiguously establishes the
+expected behavior. Record that contract and proportionate regression evidence:
+where a reasonable test seam exists, show the defect before repair, show the
+check passing after, and rerun the original failure path; otherwise, state the
+limitation and actual alternative check truthfully. If the repair becomes a
+material behavior, architecture, compatibility, data-contract, or scope
+change, stop quick implementation and enter the configured non-trivial intake
+route. The direct managed/OpenSpec path remains available only when the user
+explicitly supplies an existing managed Issue/OpenSpec task or explicitly
+requests a technical managed task. In that case the existing
+`python3 scripts/managed_task.py create --bundle <directory>`,
+`python3 scripts/execute_managed_task.py --bundle <directory>`, and
+`python3 scripts/start_managed_task.py owner/repo#N` semantics remain available.
+
+For any internal or explicit-direct technical authoring bundle,
+`managed_task.py create --bundle <directory>` retains exact
+`prepared_against` validation and bounded duplicate detection. A bounded
+same-project/target candidate requires an explicit scope decision before
+rerunning with `--confirm-distinct`. Source-Issue revision evidence,
+`supersede`, routing, and recovery rules are unchanged.
+
+For a supplied internal/direct managed task:
+
+~~~
+python3 scripts/start_managed_task.py owner/repo#N
+~~~
+
+Managed start reads and validates the versioned package before writing, creates
+the normal task branch/worktree, materializes planning artifacts only there,
+reconciles the matching Development Backlog Project item to `In progress`,
+and stops before OpenSpec apply, implementation, publication, or automatic
+dispatch. After materialization the child/direct Issue/OpenSpec package is
+authoritative for that technical change; a parent Requirement remains the
+human-facing business/progress object.
+
+### Selective goal definition
+
+Goal definition is a selective refinement layer before this intake, not a new
+task state. Refine a goal before Requirement/OpenSpec authoring only when the
+user explicitly requests goal-backed work, or when a non-trivial request is
+materially unclear about its intended outcome or success evidence. Do not
+require goal creation for an ordinary concrete quick or implementation task.
+
+A usable goal states the concrete outcome, verification evidence, a meaningful
+quantitative or binary success threshold, relevant scope bounds, and the
+condition that should stop work for clarification. If a missing choice could
+change the intended result, ask one concise question instead of inventing the
+requirement.
+
+For an explicit goal-backed request, use supported native goal state through
+`/goal` or runtime-native goal tools when available, and inspect any active
+goal before creating a duplicate or conflicting one. Include a token budget
+only when the user explicitly requests one. A fuzzy request that the user did
+not ask to make goal-backed receives transient natural-language refinement, not
+implicit durable goal state. If native goal state was explicitly requested but
+is unavailable, perform an explicitly transient refinement or report the
+limitation; never claim that `create_goal` succeeded or that an active goal
+exists when the runtime cannot prove it.
+
+Goal refinement creates no goal file, backlog entry, decision log, resume
+artifact, or competing implementation plan. For requirement-first work, the
+refined outcome informs the Business Requirement; after technical child
+materialization its OpenSpec is canonical for implementation. For a direct
+technical managed task, the Issue/OpenSpec package is authoritative after
+materialization.
+
+Managed delivery projects lifecycle evidence onto the central board: an exact
+reviewable PR becomes `In review`, while `Done` is written only after
+confirmed delivery and local reconciliation. Normal CI/merge waiting stays
+`In review`. For a real human/external stop, use
+`managed_project_status.py block`; after it clears, `resume` derives
+`In progress` versus `In review` from exact PR evidence. Quick tasks have no
+managed provenance and therefore do not touch the Project.
+
 
 
 ## Provider-local model routing
@@ -105,7 +253,7 @@ PR merge completion and required checks are determined from structured GitHub st
 
 After GitHub confirms `MERGED`, and only then, multi-agent local reconciliation takes the shared integration lock. It re-fetches `origin/main` under that lock, fast-forwards or accepts an already-equal local `main`, reconciles the board, and optionally removes only its own completed worktree/branch. Remote CI and merge-queue waits never hold this lock, so independently finishing tasks can wait in parallel without Git/index races. The platform does not hold a long-lived publisher lease across those remote waits: repeated/concurrent publish attempts for the same exact head converge through PR re-observation, create-race re-query, and exact-head merge guards instead.
 
-Run `python3 scripts/finish_task.py --status` for a non-publication view of the current task's publication state (not published / PR open-checks-pending / remote auto-merge armed-or-queued / blocked-failed-checks / remotely merged with local reconciliation pending / complete / GitHub state unavailable), including the exact task SHA and PR number/URL when known. `--status` also freshly observes task/main ancestry and reports the explicit `python3 scripts/finish_task.py --reconcile` next step before expensive validation if the branch is behind or diverged; it never pushes, creates/merges a PR, arms a merge, mutates the board, removes a worktree, or changes local task content/main. Add `--json` for a sanitized machine-readable payload (no credentials, no raw logs). Normal `finish_task` remains the delivery resume operation; rerunning it after any interruption is the correct next step after required reconcile/validation.
+Run `python3 scripts/finish_task.py --status` for a non-publication view of the current task's publication state (not published / PR open-checks-pending / remote auto-merge armed-or-queued / blocked-failed-checks / remotely merged with local reconciliation pending / complete / GitHub state unavailable), including the exact task SHA and PR number/URL when known. For a managed task, the payload also carries a bounded, best-effort `source_issue_drift` field: whether the source Development Backlog Issue's title/body changed since the package was authored. This is evidence only -- local OpenSpec stays canonical and is never rewritten from it. `--status` also freshly observes task/main ancestry and reports the explicit `python3 scripts/finish_task.py --reconcile` next step before expensive validation if the branch is behind or diverged; it never pushes, creates/merges a PR, arms a merge, mutates the board, removes a worktree, or changes local task content/main. Add `--json` for a sanitized machine-readable payload (no credentials, no raw logs). Normal `finish_task` remains the delivery resume operation; rerunning it after any interruption is the correct next step after required reconcile/validation.
 
 For a project configured with the bounded GitLab delivery adapter, publication proves the selected merge request and terminal green CI match the exact task HEAD, then stops for human merge/acceptance; it never auto-merges or deploys production.
 
