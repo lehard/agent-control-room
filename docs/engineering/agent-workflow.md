@@ -1,0 +1,241 @@
+# Agent workflow
+
+The platform exposes one lifecycle with profile-specific capabilities:
+
+`doctor -> sync origin -> start -> OpenSpec/implementation -> checks -> fetch origin again -> publish -> verify/archive`
+
+## Profiles
+
+- `light`: single-agent, synchronized integration branch, no mandatory feature branch/worktree/board.
+- `standard`: feature branches + GitHub PR/direct publication; no mandatory worktrees/board.
+- `multi-agent`: feature branches inside isolated worktrees + machine-local agent board and scope ownership.
+
+Profiles select capabilities; they are not separate forks of the platform.
+
+## Start of task
+
+Before implementation, use the common entrypoint:
+
+```bash
+python3 scripts/agent_doctor.py
+python3 scripts/start_task.py <slug> --task "<task>" --scope "<files/modules>"
+```
+
+`start_task.py` fetches `origin`, safely synchronizes the local integration branch, and then applies this project's profile. It never auto-merges divergent histories.
+
+`agent_doctor.py` is also publication preflight. It must surface an invalid protected-main/direct configuration and, for platform-owned PR publication, missing GitHub PR API authentication before the task reaches its final merge step. Existing GitHub HTTPS credentials may be reused non-persistently by the platform; otherwise authenticate once with `gh auth login` or a supported `GH_TOKEN`/`GITHUB_TOKEN`.
+
+In the `multi-agent` profile the platform atomically admits concrete file claims before implementation. Supply exact files through `--scope`; a hard claim conflict with a valid active worktree/branch identity returns `WAIT` with bounded task/path diagnostics. A branch/path-mismatched, stale, or terminal sibling record is bounded hygiene information only and must not serialize an otherwise independent start; it is never evidence that sharing the same path is safe. An unreadable or un-lockable board remains a blocked error and fails closed. Shared directories, subsystems and globs are warnings only, so independent tasks can still run in parallel. Do not use another agent's worktree or modify another active entry's scope without resolving the overlap.
+
+## Shared workspace permissions
+
+Managed platform state and Git metadata are shared with the POSIX group owning the integration checkout. Use `python3 scripts/shared_workspace.py check` for a read-only diagnosis and `python3 scripts/shared_workspace.py fix` for bounded repair. The helper only touches the registered lifecycle allowlist under `.claude` and required Git common-directory metadata; unknown tool-managed symlinks and transient caches below `.claude` are foreign and untouched. It never traverses application files, credentials, home directories or other repositories. Set `DEV_PLATFORM_SHARED_GROUP` locally only when a reviewed deployment requires a group other than the checkout's group. Filesystems without POSIX modes report a non-mutating compatibility warning.
+
+For opt-in source permissions, external hook attachment and per-user automation,
+see [local-workspace.md](local-workspace.md). Its operator-local policy is
+checked separately from the platform-state allowlist above.
+
+## Worktree hygiene
+
+This section applies to the `multi-agent` profile, where agents develop in isolated Git worktrees and register scope ownership in the machine-local agent board. The integration copy stays clean and acts only as the integration point.
+
+`agent_doctor.py` is the normal hygiene entrypoint: it diagnoses the board, safely removes board entries that are provably obsolete, scans managed worktrees, and refreshes `.claude/pending-worktrees.md`. Its explicit degraded/terminal board warning is separate from `WAIT`, blocked admission errors, and successful managed-task materialization. It never repairs a sibling's branch/path mismatch merely to start another task. Dirty or unmerged inactive work is surfaced rather than deleted. Old worktrees are cleanup candidates only when they are managed, clean, inactive, already merged and not used by a live process.
+
+Before manual worktree operations run:
+
+```bash
+python3 scripts/agent_board.py doctor --fix
+python3 scripts/worktree_cleanup.py scan
+git worktree list
+```
+
+If the pending-worktree report shows forgotten work in the same area, resolve that overlap before starting another worktree. Safe old merged worktrees require explicit global cleanup: first preview with `python3 scripts/worktree_cleanup.py cleanup --all`, then apply that reviewed plan with `python3 scripts/worktree_cleanup.py cleanup --all --apply`; never manually delete another agent's dirty or unmerged tree.
+
+After terminal task delivery, `finish_task.py --cleanup` records cleanup for a task worktree that is also the caller's cwd instead of deleting it synchronously. This preserves the truthful success exit. From a surviving integration checkout, run the exact targeted recovery command printed by finish; it names the recorded worktree, branch and head, removes only that identity after verifying it is clean and inactive, and repeated runs are safe.
+
+## Disposable repository sandboxes
+
+For a temporary local clone used by a pilot or other destructive experiment,
+use `python3 scripts/disposable_repository_sandbox.py create <source> <sandbox-root> <name>`.
+Use `verify <sandbox-root> <name>` before any external recursive operation, or
+`cleanup <sandbox-root> <name>` to verify then remove the helper-owned copy.
+The command fails closed for hardlinked files, alternates, linked Git
+metadata, unowned copies, and symlink escapes; do not replace a failed cleanup
+with a best-effort `chmod` or `rm -rf`.
+
+## Task intake
+
+
+This project has not explicitly enabled an operator integration, so task intake is self-contained: it does not require an external Backlog, Project-status mutation, fleet registry, process-health labels, or operator credentials.
+
+For a small direct request, use the existing task/check/finish lifecycle. If the work becomes materially behavioral, architectural, compatibility-sensitive, or needs a complete contract, create and agree a local OpenSpec change before implementation. The materialized change is canonical until verification and archive; do not let code diverge from it.
+
+```bash
+openspec new change <change>
+python3 scripts/select_checks.py --execute
+python3 scripts/openspec_lifecycle.py check
+```
+
+The canonical cross-project intent contract is [task-intake.md](task-intake.md).
+
+
+## Provider-local model routing
+
+After managed OpenSpec materialization, a strong parent/supervisor records its bounded semantic preflight with `scripts/model_routing.py prepare`. It selects `routine`, `standard`, or `complex` based on uncertainty, blast radius, failure cost, verification difficulty, contract conflicts and material unknowns; users do not choose an executor. Concrete provider-local model mappings are replaceable `[model_routing]` policy in `.dev-platform.toml`, not durable task artifacts.
+
+Codex routine/standard execution is launched only with proven native `workspace-write` containment; otherwise the parent retains the work or reports an actionable capability limit. Claude Code execution runs `dispatch-claude`, which records the route and, for routine/standard, emits the exact in-place Agent-tool call the supervisor must invoke -- no `isolation: worktree`, since that forks a fresh worktree off the platform's main branch and cannot see the assigned task worktree's materialized-but-uncommitted state. After the child returns, the supervisor runs `record-claude-execution --agent-id "<id>"`, which runs the mandatory `postcheck`. The parent always reviews the resulting diff and runs normal verification. Escalate routine/standard work on material conflicts, unexpected cross-cutting scope, low confidence or repeated substantive verification failures with `scripts/model_routing.py escalate --reason "..."`; preserve the existing task worktree and evidence.
+
+## Publishing
+
+Protected main and zero-hand-off are compatible. The safe normal configuration for feature-capable projects is:
+
+```toml
+protected_main = true
+publish_mode = "pr"
+pr_merge_mode = "auto"
+```
+
+With that configuration, `finish_task.py` is a GitHub-backed reconciler, not a one-shot pipeline: every invocation re-observes the local task branch/head SHA, the configured base, any exact-matching PR (identified by repository/base branch + head branch + exact `headRefOid`, never by title/body text or a remembered PR number), required-check state, remote merge/auto-merge state, and whether local reconciliation remains, then performs only the next safe step. Required status checks remain authoritative; the platform never uses branch-protection bypass.
+
+An already-open exact-head PR is detected and resumed *before* the first-publication fresh-base precondition. If `origin/main` has advanced since that PR was opened, `finish_task.py --reconcile` provides the explicit recovery path: it verifies the exact PR head/base/owner, incorporates main through a normal merge (never rebase or force-push), and requires validation to rerun before publication resumes. A dirty task, merge conflict, provenance ambiguity or changed remote head is an actionable stop, not something the helper hides with stash/reset. A brand-new, never-published branch that is stale relative to `origin/main` follows the same explicit reconcile path.
+
+For `pr_merge_mode=auto`, after a PR is created or reused, the platform prefers to arm GitHub's native auto-merge/merge-queue processing for the exact validated head *before* entering any long local wait (`gh pr merge --auto --match-head-commit <SHA>` or equivalent). Once GitHub accepts that request it persists independently of this process, so losing the caller after arming does not cancel it -- a later `finish_task`/`finish_task --status` invocation re-observes the same PR and continues from current remote state. Every ordinary/auto/queue merge request is guarded with the exact validated head SHA; if GitHub reports a different head before a request is accepted, the request fails closed and the changed head must be revalidated separately. If native auto-merge/queue is unavailable or disabled for the repository, the platform falls back to the existing bounded foreground required-check wait plus protected merge, and reports that path as degraded remote durability rather than pretending it is equally durable.
+
+PR merge completion and required checks are determined from structured GitHub state for the current PR head, never from human-readable `gh` messages. Check registration, pending checks, and merge-queue confirmation each have bounded waits: a timeout leaves the PR and feature branch intact, does not change local `main`, and is safe to resume by rerunning the same `finish_task` command.
+
+After GitHub confirms `MERGED`, and only then, multi-agent local reconciliation takes the shared integration lock. It re-fetches `origin/main` under that lock, fast-forwards or accepts an already-equal local `main`, reconciles the board, and optionally removes only its own completed worktree/branch. Remote CI and merge-queue waits never hold this lock, so independently finishing tasks can wait in parallel without Git/index races. The platform does not hold a long-lived publisher lease across those remote waits: repeated/concurrent publish attempts for the same exact head converge through PR re-observation, create-race re-query, and exact-head merge guards instead.
+
+Run `python3 scripts/finish_task.py --status` for a non-publication view of the current task's publication state (not published / PR open-checks-pending / remote auto-merge armed-or-queued / blocked-failed-checks / remotely merged with local reconciliation pending / complete / GitHub state unavailable), including the exact task SHA and PR number/URL when known. `--status` also freshly observes task/main ancestry and reports the explicit `python3 scripts/finish_task.py --reconcile` next step before expensive validation if the branch is behind or diverged; it never pushes, creates/merges a PR, arms a merge, mutates the board, removes a worktree, or changes local task content/main. Add `--json` for a sanitized machine-readable payload (no credentials, no raw logs). Normal `finish_task` remains the delivery resume operation; rerunning it after any interruption is the correct next step after required reconcile/validation.
+
+For a project configured with the bounded GitLab delivery adapter, publication proves the selected merge request and terminal green CI match the exact task HEAD, then stops for human merge/acceptance; it never auto-merges or deploys production.
+
+`pr_merge_mode=manual` keeps an explicit review stop after PR creation. Cross-repository Dev Platform rollout PRs remain reviewed and are not auto-merged by this task-publication policy.
+
+Native auto-merge/merge-queue capability is a repository setting (`gh repo edit --enable-auto-merge`, or Settings > General > "Allow auto-merge"). The platform detects and reports that capability (`agent_doctor.py`, `finish_task.py --status`) but never enables or disables it automatically; enabling it is an explicit administrative/adoption action, and doing so does not by itself merge anything -- only a specific PR that the publication lifecycle explicitly arms becomes eligible.
+
+`publish_mode=direct` is only valid for an intentionally unprotected integration branch. It re-fetches immediately before push and only pushes when remote main is an ancestor of local main. `protected_main=true` plus `publish_mode=direct` is an invalid configuration and doctor/finish preflight must reject it before local integration.
+
+Platform-owned PR publication requires authenticated GitHub CLI/API access. Run `gh auth login` once on the agent host (or provide a supported `GH_TOKEN`/`GITHUB_TOKEN`). Doctor checks this before a protected-main task reaches publication. Git branch push and PR API operations are kept separate so validated work is not lost if `project_publish.py` is invoked directly in a partially configured environment.
+
+## Local-heavy, cloud-final verification
+
+`select_checks.py` has two deliberate policies: the default `local-affected` mode provides fast feedback only when every changed path has a maintained mapping; unknown paths and control-plane paths fail closed to the configured full set. `--mode protected-full` always runs that full set and is the only selector mode used by the reusable protected-PR gate. Successful commands print compact machine-readable duration/outcome evidence; failures also retain a bounded output tail. A local success is never merge authority.
+
+For `harness_mode=platform`, its machine-readable selection state distinguishes `not-applicable`, `ready`, and `invalid-coverage`. An affected configured group with no commands, malformed evidence metadata, or a missing required evidence type is `invalid-coverage` and blocks validation. `checks.toml` may label command evidence with `evidence_types` and require a type (such as `test`) with `required_evidence_types`; syntax/compilation must not be labelled as product-test evidence. `harness_mode=project` retains ownership of its repository CI and is not made to implement this selector contract.
+
+Required selected and full checks run locally before publication. The self-contained cloud workflow is the final clean-environment merge gate for `publish_mode=pr`. Protected PR publication waits for that gate before merging. Superseded validation runs for the same PR/ref are cancelled. Manual workflow dispatch remains the explicit cloud path for a full platform-managed run when that is useful.
+
+For intentionally unprotected `publish_mode=direct` repositories, the published main state receives an automatic run that is deliberately lightweight: it validates platform/OpenSpec health without repeating the full project check set. Direct-mode repositories also retain the stable pull-request `platform-ci` gate for explicitly reviewed maintenance or rollout PRs so existing required-status protection can be satisfied if such a PR is used.
+
+Do not skip local verification because cloud CI is narrower, and do not use the compatibility PR gate as a reason to duplicate expensive full/browser suites without a reviewed repository-specific need.
+
+## Platform release and CI updates
+
+Platform-managed scripts, docs and the self-contained CI workflow are versioned inside this repository by Copier. Platform upgrades arrive only through reviewed Copier update PRs; downstream CI never executes mutable `dev-platform@main` logic and does not require private cross-repository Actions Access.
+
+GitHub Actions is the current control plane, not the default implementation
+surface. Put portable test, build, verification, release, and deploy behavior
+that can run from a checkout behind repository-owned executable commands or
+scripts, and have the workflow orchestrate those entrypoints so agents and
+developers can invoke them locally. Keep GitHub-native events, permissions,
+concurrency, checkout/setup, secrets and environment wiring, artifacts, and
+check/status integration in the workflow. Do not add a generic provider
+abstraction for hypothetical portability, and do not extract working inline
+workflow logic merely to make YAML smaller.
+
+`platform_ci_ref` in schema v2 is legacy compatibility metadata and is not executed by the self-contained CI workflow.
+
+Required GitHub checks are never bypassed. Do not add agent/admin bypass merely to make autonomous publication succeed. The human user must not be used as a routine Git courier between completed agent work and GitHub.
+
+## Friction and promotion
+
+Record only high-signal friction: user correction, repeated failure, safety near-miss, undocumented invariant or excessive retries. Separate observation, evidence, hypothesis and proposal; classify as `project` or `platform`. Do not record secrets or routine successful sessions. When a correction or substantive failure shows missing or misread stable project context, record it with `--classification context-gap` and one bounded `--context-concern` (`product`, `domain`, `architecture`, `anti-pattern`, `example`, or `other`); the corresponding `docs/context/` destination is a proposed improvement candidate, not an automatic write. Tooling, CI, lifecycle, worktree, authentication, and process defects remain ordinary `process-friction`; recurrence never automatically edits context or creates/starts managed work.
+
+The normal path is `record -> sanitized GitHub process issue upsert -> cloud triage/review`. Recording retains raw evidence locally and automatically creates or updates a fingerprinted issue in the correct repository. Routing failure leaves the local event pending and never blocks safe delivery; supported lifecycle commands retry it. Process issues are evidence only: neither triage nor review may create a managed task, OpenSpec change, implementation PR, or code change.
+
+When a human accepts process evidence as work, record the Business Requirement
+first. When pre-authoring produces the internal managed child that implements
+that evidence-backed change, author the child with repeatable
+`--process-evidence owner/repo#N` references. The managed package keeps the
+canonical relation; linked open evidence gets the bounded `process:managed`
+label/backlink and remains open until terminal delivery. A
+Process Health Review is read-only: its dated report records the exact `main`
+SHA and previous-review boundary, checks bounded current Requirement parents,
+linked children, pre-authoring and parent-retrospective process evidence, and
+merged changes, clusters symptoms by likely root cause, and verifies
+likely-resolved candidates against current repository evidence. Clean children
+do not suppress early or cross-child findings. Specialized reviews feed the
+same friction/process-issue mechanism, without a parallel improvement queue.
+It never creates
+managed work or closes/relabels source evidence.
+
+Publish a new machine-local Process Health Review report with
+`python3 scripts/shared_workspace.py publish-report --name YYYY-MM-DD-topic.md < report.md`.
+The command uses the configured registered reports directory, creates only a
+new basename, and verifies group read/write on its published file before
+returning success. It refuses an existing report, path traversal, and symlinks.
+For a correction to an existing report owned by the current writer, use
+`shared_workspace.atomic_write_text` from this repository's `scripts` and then
+run `python3 scripts/shared_workspace.py check`. Run that read-only check after
+each review, including reports written by external editors; repair only files
+owned by the current writer. New platform script functions that create files
+must pass the direct-writer CI guard or receive explicit review of the new
+creation call and its declared output verification. An external editor is
+outside the platform writer API, so its output remains subject to the check.
+
+```bash
+python3 scripts/agent_friction.py record --category <category> --scope project --observation <sanitized-summary> --evidence <local-evidence-summary> --hypothesis <hypothesis> --proposal <proposal>
+python3 scripts/agent_friction.py record --classification context-gap --context-concern architecture --category <category> --scope project --observation <sanitized-summary> --evidence <local-evidence-summary> --hypothesis <hypothesis> --proposal <proposal>
+```
+
+The weekly cloud Process Health Review is the routine review cadence. Local `pending`, `review`, `mark-reviewed`, and `promote` commands remain recovery/diagnostic surfaces, not per-task actions or completion ritual. `reconcile-process-labels` is a bounded idempotent recovery operation that restores the configured `process` label only on unmistakably router-generated open source issues. Pass `--participant-role supervisor|executor` when a finding concerns a specific participant; identity is read back from the current model-routing record rather than self-reported (see `docs/engineering/model-routing.md#execution-provenance`). Fingerprinting never includes model/provider, so the same recurring problem across different models updates one issue instead of splitting by model.
+
+### Post-task retrospective
+
+Before non-trivial completion, run `python3 scripts/agent_friction.py review-path` to inspect the bounded checklist and task-attributed signals already in the local friction log. Then run a distinct post-task retrospective over the actual task path: inspect non-default/override flags used, successful manual workarounds and state changes, known process issues encountered again, and material drift observed in operator-owned or other lifecycle state. A successful workaround is still a candidate; an already open issue does not dispose of a new recurrence. Record meaningful occurrences with `agent_friction.py record --task <branch>` and the applicable `--trigger` value (`manual-workaround`, `nondefault-override`, `known-recurrence`, or `observed-drift`); repeat `--trigger` when needed. The existing router adds a new occurrence to a matching open process issue. Harmless deviations and routine commands are not friction. Do not copy raw shell history or secrets into the review note.
+
+Review the task for user corrections, repeated substantive failures/retries, manual workarounds, safety near-misses, false premises, undocumented invariants, missing automation/documentation, tooling/auth/worktree/Git/OpenSpec/CI/lifecycle friction, avoidable repeated work, and problems noticed but left unresolved. A relevant user correction or repeated semantic failure may be a `context-gap` when it exposes stable project/domain knowledge that belongs in a bounded context destination; do not force ordinary agent mistakes or tooling/process defects into that category. Classify each candidate as already resolved in this task, already represented by an existing recorded event, or new and meaningful; record only the last class.
+
+The retrospective also reads the current task's existing high-signal `lifecycle-*` failure records and recorded workaround/override/recurrence/drift signals from the friction log. It does not add a task-outcome database: a lifecycle failure must be classified as `resolved-in-task`, `already-recorded`, or `new-recorded` before the checkpoint can succeed. Clean tasks have no such records and retain the one-command `none` path.
+
+```bash
+python3 scripts/agent_friction.py checkpoint --result none --review-note "Reviewed actual task path and found no meaningful workaround, override, recurrence or drift"
+python3 scripts/agent_friction.py checkpoint --event <id> [--event <id> ...] --review-note "Reviewed actual task path and linked meaningful occurrences"
+python3 scripts/agent_friction.py checkpoint --result none --review-note "Reviewed actual task path and found no meaningful workaround, override, recurrence or drift" --disposition <event-id>=resolved-in-task|already-recorded|expected-behavior
+```
+
+Event attribution: `record` takes the task from `--task`, otherwise the current task branch; an event recorded on the integration branch or an unknown branch is marked `unattributed`. The review also recovers legacy events whose `task` is empty through their recorded `branch` or source issue without rewriting them (`inferred_attribution` in `review-path`). Recent events that cannot be attributed at all appear as `ambiguous_attribution`; they are neither assigned to this task nor hidden.
+
+Every mandatory signal (high-signal `lifecycle-*` failure, or a recorded workaround, override, recurrence or drift event) must be linked with `--event` or classified with `--disposition <event-id>=resolved-in-task|already-recorded|expected-behavior`; the recorded event is the evidence. A `known-recurrence` occurrence can only be linked. An unreadable or partial evidence source (`evidence_sources` in `review-path`) is not a clean result: repair it or accept it explicitly with `--accept-gap friction-log`.
+
+`review-path` prints a short shared `template`: what happened and on what evidence; confirmed cause kept apart from hypothesis (unknown is acceptable); fix kept apart from workaround; repeats and remaining problems; the action with a verifiable result or why none is needed. A project may add at most five `[[question]]` entries (`text`, optional `paths` globs) to its own `dev-platform/retrospective.toml`; they are shown only when the changed files match and never replace the shared template. A missing or invalid file leaves the shared path working. A clean task stays one `checkpoint --result none` command.
+
+`--result none` is valid only after the factual path review recorded a short `--review-note` and found nothing new and every mandatory signal is linked or has an explicit disposition. Referencing its recorded event is the `new-recorded` disposition; `--disposition` (alias `--lifecycle-disposition`) covers the resolved/already-recorded/expected-behavior cases. The checkpoint binds to the current branch and Git head; a fresh retrospective is required once new commits land, and completion rechecks for newly unexplained mandatory signals. A missing, stale, or unclassified checkpoint blocks completion with an actionable instruction -- it never invents `none`.
+
+## Completion
+
+Before reporting a non-trivial OpenSpec task as complete:
+
+- active OpenSpec artifacts still describe what was actually built;
+- required project checks pass or deviations are explicit;
+- semantic OpenSpec verification has been run and material findings resolved;
+- `verification.md` contains `OpenSpec-Verify: PASS` and a truthful `Verification-Method`;
+- the OpenSpec change has been archived through the lifecycle helper;
+- the task is published according to the configured mode;
+- temporary machine-local artifacts are not tracked;
+- the post-task retrospective ran and the friction checkpoint reflects its current result (`--result none`, or every `--event <id>` it produced).
+
+The final report states that the retrospective ran and either lists its findings or says explicitly that none were found. If any required completion step is blocked, report the blocker instead of saying the task is done.
+
+## Commands
+
+```bash
+python3 scripts/agent_doctor.py
+python3 scripts/start_task.py my-task --task "OpenSpec add-x: 1-3" --scope "backend/..."
+python3 scripts/select_checks.py --execute
+python3 scripts/finish_task.py --reconcile
+python3 scripts/finish_task.py
+python3 scripts/finish_task.py --status
+```
+
+The multi-agent profile may use `start_worktree.py` directly, but `start_task.py` is the preferred shared entrypoint.

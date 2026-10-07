@@ -1,0 +1,88 @@
+schema_version = 2
+platform_version = "1.8.2"
+platform_ci_ref = "dab74494c9a6ad9a77d99e73bb36774a6d42350d"
+project_name = "agent-control-room"
+project_slug = "agent-control-room"
+main_branch = "main"
+workflow_profile = "standard"
+harness_mode = "platform"
+protected_main = false
+publish_mode = "direct"
+pr_merge_mode = "auto"
+scm_provider = "github"
+agent_tools = "claude,codex"
+project_required_files = []
+
+[capabilities]
+openspec = true
+github_sync = true
+feature_branches = true
+worktrees = false
+agent_board = false
+platform_git_lifecycle = true
+
+[tools.openspec]
+min_version = "1.13.2"
+tested_version = "1.13.2"
+verify_required = true
+
+[tools.copier]
+min_version = "9.18.2"
+tested_version = "9.18.2"
+
+[model_routing]
+enabled = true
+
+[model_routing.codex]
+routine_model = "gpt-6-luna"
+standard_model = "gpt-6.1-sol"
+complex_model = "gpt-6.1-sol"
+
+[model_routing.claude]
+routine_model = "haiku"
+standard_model = "sonnet"
+complex_model = "opus"
+
+[context_delegation]
+# Soft opt-in only. Normal repository reads remain available everywhere.
+enabled = false
+
+[observation_lifecycle]
+# Soft opt-in only, consistent with [context_delegation]. Normal observations
+# below the configured eligibility bound are never intercepted. Eligibility
+# is evidence-driven, not a research-specific universal threshold -- tune
+# min_bytes per project as usage evidence warrants.
+enabled = false
+min_bytes = 8000
+
+[same_context_compaction]
+# Advisory opt-in only. The gate records deterministic payload evidence and
+# preserves canonical references; it does not create a durable handoff.
+enabled = false
+
+[independent_review]
+# Opt in to require independent review for managed changes. When enabled,
+# archive launches a fresh read-only reviewer through the task route's provider
+# (or an explicit `provider = "codex"|"claude"`) and finish re-validates it.
+enabled = false
+
+# Optional developer-preview backend. Merely rendering this configuration does
+# not install or select DeepSeek Harness; the separate adapter entrypoint still
+# requires an explicit opt-in for every experimental run.
+[experimental_runtime.deepseek_harness]
+enabled = false
+sdk_version = "0.1.1rc1"
+profile = "observation"
+
+
+
+[paths]
+worktrees = ".claude/worktrees"
+agent_board = ".claude/agents-board.json"
+main_merge_lock = ".claude/main-merge.lock"
+pending_worktrees = ".claude/pending-worktrees.md"
+pending_completed_worktree_cleanup = ".claude/pending-completed-worktree-cleanup.json"
+friction_log = ".claude/agent-friction.jsonl"
+friction_state = ".claude/agent-friction-state.json"
+friction_reports = ".claude/reports/process-improvement"
+checks = "dev-platform/checks.toml"
