@@ -1,45 +1,255 @@
 
-# Portable task intake
+# Managed task intake
 
-This is the project-local contract for turning a user request into work. It
-does not require an operator Backlog, GitHub Project, fleet registry, or
-operator credentials.
+This is the platform-owned contract for turning a user request into work.
+`AGENTS.md` is the short repository map; project/domain rules remain
+project-owned. Read this document before authoring or executing non-trivial
+work.
+
+Its intent boundaries, managed representation, source-of-truth model, and
+authoring STOP rules apply across conversation surfaces. Repository-local
+agents use the commands below; ChatGPT Project follows the connected-GitHub
+mechanics in [chatgpt-project-protocol.md](chatgpt-project-protocol.md) without
+creating a separate task format.
 
 ## Intent boundary
 
-- **Discuss**: inspect and compare without creating durable task state.
-- **Fix / plan a non-trivial change**: author a local OpenSpec
-  proposal/spec/design/tasks package and stop for acceptance.
-- **Quick execution**: make a small, bounded change through the normal
-  task/check/finish workflow without ceremonial OpenSpec. This includes a
-  regression repair that restores behavior unambiguously established by an
-  accepted spec or equivalent durable contract; retain proportionate regression
-  evidence.
-- **Non-trivial execution**: agree the local OpenSpec package before
-  implementation, then keep it canonical through verification and archive.
+- **Discuss**: inspect, design and compare. Do not create durable Backlog state.
+- **Incubate / park**: preserve a potentially useful idea without accepting it
+  for delivery. Use the repository-backed Incubator contract below; do not
+  create a Requirement, managed task, or OpenSpec package.
+- **Fix / add to Backlog**: an explicit recording request (for example
+  `зафиксируй`, `добавь в бэклог`, `создай задачу`, `отправь в бэклог`)
+  creates or updates a human-facing Business Requirement and stops. Fixation
+  does **not** author OpenSpec, perform technical decomposition, start
+  pre-authoring, start implementation, or change lifecycle status.
+  `requirement_intake.py create` applies the checkout's configured
+  `[development_backlog]` project label and the explicit or default priority
+  to the Requirement, fails closed before creating anything when that routing
+  cannot be resolved (mismatched Backlog repository, a target repository not
+  configured in this checkout, or an unavailable label), and verifies both
+  labels by reading the Issue back before reporting success.
+- **Quick execution**: a small, clear, bounded change may use normal task
+  execution without a Requirement, Backlog Issue, or ceremonial OpenSpec
+  change. This includes a regression repair that restores behavior
+  unambiguously established by an accepted spec or equivalent durable contract.
+- **Fresh non-trivial execution**: unless the user explicitly requests a
+  technical managed task/OpenSpec change, create or reuse a Business
+  Requirement, start its pre-authoring flow, produce the internal managed
+  OpenSpec change(s) from handoff, link them back to the Requirement, start
+  those managed tasks, and only then implement.
+- **Existing Business Requirement**: start the supplied Requirement through
+  `requirement_intake.py start` and resume its pre-authoring state.
+- **Direct technical managed/OpenSpec path**: preserve the existing managed
+  authoring/start path when the user explicitly supplies an existing managed
+  Issue/OpenSpec task or explicitly asks to create a technical managed task.
+  This path is an exception chosen by explicit technical intent; it is not the
+  default meaning of `зафиксируй`.
 
-Use repository evidence to resolve factual ambiguity. Ask the user only when a
-material product or scope choice remains. For a reasonable test seam, a quick
-regression repair demonstrates the defect before repair, passes after it, and
-reruns the original failure path. Otherwise, state the limitation and actual
-alternative check truthfully. Do not let a quick task silently grow into a
-material behavior, architecture, compatibility, data-contract, or scope
-change: write/accept the local OpenSpec package first.
+User wording is evidence of the current intent, not a magic keyword. Direct
+execution does not require a second `зафиксируй` instruction. A fixation-only
+request always stops after the Requirement is durable unless the same request
+also clearly authorizes execution.
+
+## Requirement-first cross-surface contract
+
+A Business Requirement is the normal human-facing unit of accepted non-trivial
+work. It is an ordinary Development Backlog Issue labeled `type:requirement`
+with business-language sections:
+
+- `## Outcome`;
+- optional `## Context`;
+- optional `## Acceptance evidence`;
+- `## Target repository`;
+- optional `## Exclusions`;
+- the machine-readable requirement-children block owned by
+  `requirement_intake.py`.
+
+Requirement fixation contains no `proposal.md`, `design.md`, `tasks.md`,
+OpenSpec delta, file-level plan, or technical decomposition. The stable
+pre-authoring identity is `requirement-<issue-number>`.
+
+The semantics are identical across agent surfaces:
+
+- A repository-local Codex, Claude Code, or other agent with a checkout MUST
+  use `python3 scripts/requirement_intake.py create ...` for fixation.
+- A ChatGPT Project with connected GitHub mutation access but no checkout uses
+  the bounded adapter in [chatgpt-project-protocol.md](chatgpt-project-protocol.md)
+  to create and read back the **same Requirement representation**. That adapter
+  is a transport equivalent of `requirement_intake.py create`; it must not
+  substitute a managed OpenSpec package merely because it lacks local shell
+  access.
+- A fixation-only request stops as soon as the Requirement is durably created
+  or the exact existing Requirement is reused.
+
+When the user asks to execute a Business Requirement, the ordered flow is:
+
+The target checkout must first prove its managed lifecycle: valid Backlog
+routing, enabled OpenSpec/Git capabilities, required Requirement and managed
+task entrypoints, and protected PR publication. Fixation and execution fail
+early with missing evidence and a supported route when this cannot be proved.
+An operator-managed downstream repository keeps its existing explicit opt-in;
+operator routing parameters alone do not prove lifecycle support. Terminal
+reconciliation checks the target again before marking the parent Done.
+
+1. Run `python3 scripts/requirement_intake.py start --requirement owner/repo#N`.
+2. Drive `scripts/orchestrate_pre_authoring.py --id requirement-N status`
+   resumably. Record a reasoned `select-depth` decision: `deterministic`,
+   `bounded-evidence` with explicit `--concern` scope, or `material-design`.
+3. Deterministic work produces a direct handoff without snapshot or model work.
+   Bounded evidence uses only selected routine read-only projections and then
+   a direct handoff. Neither path creates ADD/intents. For material design,
+   build/reuse evidence and draft/approve ADD, pausing for a consequential choice.
+4. On the material path, decompose ADD elements into intents and prepare
+   OpenSpec handoff envelopes.
+5. For every ready handoff, author its managed bundle and run
+   `python3 scripts/requirement_intake.py materialize-handoff --requirement owner/repo#N --handoff <ready-envelope.json> --bundle <authored-bundle-directory>`.
+   This validates readiness, creates or exactly reuses one managed Issue, repairs
+   an interrupted link on retry, and confirms both link directions before
+   success. The authored bundle supplies proposal/design/spec semantics.
+6. Run `python3 scripts/execute_requirement.py advance --requirement owner/repo#N` to start and resume the children. A direct handoff is executable as one child. One child uses its ordinary managed PR; two or more children use shared integration only for joint delivery. Once the first child is verified and ready and two or more mandatory children are planned, `advance` opens one shared draft PR (never mergeable, queued or auto-merged) and appends each later ready child to the same branch and PR by fast-forward push; only when every mandatory child is present, the retrospective checkpoint exists and full checks pass on the exact final head is that PR marked ready and merged. Rerunning resumes the same PR. After exact delivery, terminal reconciliation marks the parent Done and closes it. Retry older delivered parents with `python3 scripts/requirement_terminal.py reconcile --requirement owner/repo#N`. OpenSpec becomes canonical for each child after materialization. Ordinary finish cleans a single child; merged shared integration records an exact worktree/branch/head target and prints the safe targeted cleanup command to run from integration `main` after the publisher exits.
+
+Requirement progress is read-through, never a second status ledger:
+`python3 scripts/requirement_intake.py aggregate --requirement owner/repo#N`
+retains its child-only `status` for compatibility and adds a `progress`
+projection. `progress.stage` is one of `pre-authoring`, `design`,
+`human-decision`, `ready`, `implementation`, `blocked`, `unknown`, or `done`;
+before materialization it reads local orchestrator evidence; once children
+exist it reads their authoritative Development Backlog Project statuses without
+requiring machine-local pre-authoring state. Its `reason`, `diagnostics`, and
+`sources` identify the evidence used. An unreadable, stale, unsupported, or
+contradictory source fails closed to `unknown`; an explicit child block or
+orchestrator escalation reports `blocked`. No output is persisted as a
+Requirement field. The primary human-facing Project view should show
+Requirements and exclude `type:internal-change`; child visibility remains
+available through the parent links and dedicated/internal views.
+
+## Incubator
+
+`Incubator` is an optional pre-commitment planning layer backed by ordinary open
+Issues in the configured Development Backlog repository. An incubated Issue
+carries the dedicated `incubator` label but SHALL NOT carry a `project:*` label,
+a priority label, Requirement label, managed authoring receipt, OpenSpec
+package, routing decision, task workspace, or execution entitlement. It remains
+outside both requirement-first intake and the technical managed lifecycle until
+a human accepts it as work.
+
+Keep an incubated item small and machine-editable. Record the target repository,
+the idea or hypothesis, why it is worth remembering (including a source when
+useful), and a **revisit condition**. Prefer an evidence/event trigger such as
+“after enough routing executions exist” or “if this friction repeats” over an
+arbitrary calendar date unless the decision is genuinely time-driven.
+
+GitHub Project placement is a visualization layer, not the source of truth. A
+Project may auto-add Issues matching `label:incubator` and expose a dedicated
+`Incubator` view filtered by that label. Main Requirement views should exclude
+`label:incubator` and `type:internal-change`. Do not add a `project:*` label
+merely to make an incubated Issue appear in a Project.
+
+Promotion requires explicit human acceptance of the idea as work. Create or
+reuse the ordinary Business Requirement through the requirement-first fixation
+path and leave fixation stopped there. After the Requirement identity exists,
+close the incubated Issue with a link to the Requirement. Never promote an
+incubated idea directly into OpenSpec or start implementation merely because it
+was parked.
+
+If the current agent surface cannot mutate GitHub Project views or fields, that
+must not block durable incubation or Requirement authoring: create/update the
+repository Issue and let configured Project automation/views surface it when
+available.
+
+## Evidence-first execution
+
+Use repository evidence to narrow work before broad reading or unnecessary
+human interruption. If the relevant file, symbol, owner, or contract is not
+known, search first; then read only the likely evidence-bearing files needed to
+make the next decision or act safely. If the canonical path is already known,
+read it directly rather than performing a ceremonial search.
+
+Resolve factual ambiguity from repository evidence when the repository can
+answer it. Ask the user when a material product, intent, or scope choice remains
+rather than turning a repository lookup into a question. Once enough evidence
+exists to act safely inside the agreed scope, proceed instead of continuing
+open-ended exploration by default.
 
 ## Commands
 
+For fixation-only authoring from a repository checkout, prepare small text files
+for the business sections and run:
+
 ```bash
-openspec new change <change>
-python3 scripts/start_task.py <change> --task "OpenSpec <change>" --scope "<paths>"
-python3 scripts/select_checks.py --execute
-python3 scripts/openspec_lifecycle.py check
-python3 scripts/finish_task.py
+python3 scripts/requirement_intake.py create \
+  --repository OWNER/DEVELOPMENT-BACKLOG \
+  --title "<business requirement title>" \
+  --outcome-file <outcome.md> \
+  --target-repository OWNER/TARGET \
+  [--context-file <context.md>] \
+  [--acceptance-file <acceptance.md>] \
+  [--exclusions-file <exclusions.md>]
 ```
 
-The generated repository contains its own lifecycle scripts and CI workflow.
-Provider adapters create or reuse the configured review object; GitLab stops at
-green exact-head CI for human merge/acceptance. Do not require access to this
-platform repository or to an operator installation to perform ordinary work.
+To execute or resume an existing Requirement:
+
+```bash
+python3 scripts/requirement_intake.py start --requirement owner/repo#N
+python3 scripts/orchestrate_pre_authoring.py --id requirement-N status
+```
+
+Follow the orchestrator's bounded next action until handoff is complete. Author
+each resulting **internal** technical managed change through the existing
+managed-task path, then link it immediately:
+
+```bash
+python3 scripts/managed_task.py create --bundle <directory>
+python3 scripts/requirement_intake.py link-child \
+  --requirement owner/repo#N \
+  --child owner/repo#M
+python3 scripts/start_managed_task.py owner/repo#M
+```
+
+The composed direct execution helper remains valid only for an explicitly
+technical managed task:
+
+```bash
+python3 scripts/execute_managed_task.py --bundle <directory> --scope "<files/modules>"
+```
+
+For an already supplied managed Issue/OpenSpec task, continue to use:
+
+```bash
+python3 scripts/start_managed_task.py owner/repo#N
+```
+
+Candidate overlap and managed-package validation rules remain unchanged for
+those internal/direct technical paths.
+
+## Escalating quick work
+
+Keep quick work quick. A directly requested small regression repair may remain
+quick only when an accepted spec or equivalent durable contract unambiguously
+establishes the expected behavior. Record that contract and proportionate
+regression evidence. Where a reasonable test seam exists, demonstrate the
+defect before repair, show the regression check passing after, and rerun the
+original failure path. Where no reasonable automated seam exists, state the
+limitation and actual alternative check truthfully; do not fabricate evidence.
+
+If inspection reveals material behavioral,
+architectural, compatibility, data-contract, cross-session, or scope impact —
+or if a full active OpenSpec change is needed to govern the work — stop further
+implementation and enter managed intake first. Do not create a normal active
+OpenSpec change as a substitute for managed provenance.
+
+The ordinary terminal lifecycle rejects an active OpenSpec change that lacks
+managed provenance. This does not affect genuine quick work with no active
+OpenSpec. Legacy/manual states need a reviewed recovery that records their real
+source identity; never fabricate an Issue, delete work, or bypass the guard.
+
+## Existing managed repositories
+
+This document is platform-owned and arrives through normal release rollout.
+Project-owned root `AGENTS.md` keeps local rules, but must include the stable
+reference inserted by the rollout migration. The migration is additive and
+marked; it does not replace project/domain or module-level instructions.
 ## Readable managed work identity
 
 Requirement creation exposes `Work identity: BR-N`, derived from its Issue

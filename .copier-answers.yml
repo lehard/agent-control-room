@@ -5,14 +5,14 @@ agent_tools: claude,codex
 harness_mode: platform
 main_branch: main
 operator_config_path: ''
-operator_integration: false
+operator_integration: true
 platform_ci_ref: dab74494c9a6ad9a77d99e73bb36774a6d42350d
-pr_merge_mode: auto
+pr_merge_mode: manual
 project_description: ''
 project_name: agent-control-room
 project_slug: agent-control-room
-protected_main: false
-publish_mode: direct
+protected_main: true
+publish_mode: pr
 scm_provider: github
 workflow_profile: standard
 
